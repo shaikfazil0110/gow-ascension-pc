@@ -1,0 +1,99 @@
+
+name: Ascension Windows Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+      - ascension-perf
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Windows x64 Release
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout Ascension
+        uses: actions/checkout@v4
+        with:
+          path: ascension
+          submodules: recursive
+
+      # Change this to the matching ps3kit fork if required.
+      - name: Checkout ps3kit
+        uses: actions/checkout@v4
+        with:
+          repository: sp00nznet/ps3recomp
+          path: ps3kit
+          submodules: recursive
+
+      - name: Validate source files
+        shell: pwsh
+        run: |
+          if (!(Test-Path "ascension/src/recomp/ppu_recomp.h")) {
+            throw "Missing generated PPU sources. Add src/recomp to your repository."
+          }
+
+          if (!(Get-ChildItem "ascension/src/recomp" -Include *.cpp,*.c -Recurse)) {
+            throw "No generated PPU C/C++ files found."
+          }
+
+          if (!(Test-Path "ps3kit/CMakeLists.txt")) {
+            throw "ps3kit checkout failed."
+          }
+
+      - name: Setup Visual Studio
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install build tools
+        shell: pwsh
+        run: |
+          choco install llvm ninja cmake python3 -y
+
+      - name: Initialize ps3kit submodules
+        shell: pwsh
+        run: |
+          git -C ps3kit submodule update --init --recursive
+
+      - name: Configure CMake
+        shell: pwsh
+        run: |
+          cmake -S ascension -B build -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_C_COMPILER=clang-cl `
+            -DCMAKE_CXX_COMPILER=clang-cl `
+            -DPS3RECOMP_DIR="${{ github.workspace }}/ps3kit" `
+            -DASCENSION_RPCS3_RSX=OFF
+
+      - name: Build Ascension
+        shell: pwsh
+        run: |
+          cmake --build build --parallel 4
+
+      - name: Collect build files
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force release | Out-Null
+
+          Get-ChildItem build -Filter "*.exe" -Recurse |
+            Copy-Item -Destination release
+
+          Get-ChildItem build -Filter "*.dll" -Recurse |
+            Copy-Item -Destination release -ErrorAction SilentlyContinue
+
+          Get-ChildItem release
+
+      - name: Upload Windows Release
+        uses: actions/upload-artifact@v4
+        with:
+          name: Ascension-Windows-x64
+          path: release/*
+          if-no-files-found: error
+          retention-days: 14
